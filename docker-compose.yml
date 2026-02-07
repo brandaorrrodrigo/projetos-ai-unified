@@ -1,0 +1,556 @@
+version: '3.8'
+
+# =========================================
+# DOCKER COMPOSE UNIFICADO - 9 PROJETOS AI
+# Infraestrutura centralizada para gerenciar
+# todos os projetos de forma integrada
+# Criado em: 07/02/2026
+# =========================================
+
+networks:
+  ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+services:
+
+  # ========================================
+  # 📊 INFRAESTRUTURA BASE
+  # ========================================
+
+  # ✅ PostgreSQL 16 - Database Central
+  postgres:
+    image: postgres:16-alpine
+    container_name: unified-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:--E UTF8 --locale=en_US.UTF-8}
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ✅ Redis 7 - Cache Compartilhado
+  redis:
+    image: redis:7-alpine
+    container_name: unified-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis} --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.3
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ✅ Ollama - IA Local
+  ollama:
+    image: ollama/ollama:latest
+    container_name: unified-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.4
+    # Descomente para usar GPU (NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ✅ Qdrant - Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: unified-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-qdrant_key}
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🛠️ FERRAMENTAS DE ADMINISTRAÇÃO
+  # ========================================
+
+  # ✅ PgAdmin - Gerenciador PostgreSQL
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: unified-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@projetos-ai.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      SCRIPT_NAME: /pgadmin
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.6
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ✅ Redis Commander - Gerenciador Redis
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: unified-redis-commander
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-redis}
+    networks:
+      ai-network:
+        ipv4_address: 172.21.0.7
+    depends_on:
+      - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 1: NUTRIFITCOACH
+  # ========================================
+
+  nutrifitcoach-backend:
+    build:
+      context: /d/NUTRIFITCOACH_MASTER/backend
+      dockerfile: Dockerfile
+    container_name: nfc-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/nutrifitcoach
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nutrifitcoach-frontend:
+    build:
+      context: /d/NUTRIFITCOACH_MASTER
+      dockerfile: Dockerfile
+    container_name: nfc-frontend
+    restart: unless-stopped
+    ports:
+      - "3003:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8001
+    depends_on:
+      - nutrifitcoach-backend
+    networks:
+      - ai-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 2: DOUTORA IA
+  # ========================================
+
+  doutora-backend:
+    build:
+      context: /d/doutora-ia/api
+      dockerfile: Dockerfile
+    container_name: doutora-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/doutora_ia
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      OLLAMA_BASE_URL: ${OLLAMA_INTERNAL_URL}
+      QDRANT_URL: ${QDRANT_INTERNAL_URL}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  doutora-frontend:
+    build:
+      context: /d/doutora-ia/web
+      dockerfile: Dockerfile
+    container_name: doutora-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    depends_on:
+      - doutora-backend
+    networks:
+      - ai-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 3: JURIS IA
+  # ========================================
+
+  juris-backend:
+    build:
+      context: /d/JURIS_IA_CORE_V1/api
+      dockerfile: Dockerfile
+    container_name: juris-backend
+    restart: unless-stopped
+    ports:
+      - "8003:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/juris_ia
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      OLLAMA_BASE_URL: ${OLLAMA_INTERNAL_URL}
+      QDRANT_URL: ${QDRANT_INTERNAL_URL}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 4: E-KIDS PRO
+  # ========================================
+
+  ekids-main:
+    build:
+      context: /d/E-Kids-PRO
+      dockerfile: Dockerfile
+    container_name: ekids-main
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ekids
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      OLLAMA_BASE_URL: ${OLLAMA_INTERNAL_URL}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ekids-chat:
+    build:
+      context: /d/E-Kids-PRO/server-chat
+      dockerfile: Dockerfile
+    container_name: ekids-chat
+    restart: unless-stopped
+    ports:
+      - "3101:3001"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/ekids
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      OLLAMA_BASE_URL: ${OLLAMA_INTERNAL_URL}
+    depends_on:
+      - ekids-main
+    networks:
+      - ai-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 5: ENEM-IA
+  # ========================================
+
+  enem-backend:
+    build:
+      context: /d/enem-ia/enem-pro
+      dockerfile: Dockerfile
+    container_name: enem-backend
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/enem_ia
+      OLLAMA_BASE_URL: ${OLLAMA_INTERNAL_URL}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  enem-frontend:
+    build:
+      context: /d/enem-ia
+      dockerfile: Dockerfile
+    container_name: enem-frontend
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8002
+    depends_on:
+      - enem-backend
+    networks:
+      - ai-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 6: PETCONTROL
+  # ========================================
+
+  petcontrol:
+    build:
+      context: /d/petcontrol-ia/petcontrol-pro
+      dockerfile: Dockerfile
+    container_name: petcontrol
+    restart: unless-stopped
+    ports:
+      - "3004:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/petcontrol
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 7: MEDICONTROL
+  # ========================================
+
+  medcontrol:
+    build:
+      context: /d/MEDCONTROL
+      dockerfile: Dockerfile
+    container_name: medcontrol
+    restart: unless-stopped
+    ports:
+      - "3005:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/medcontrol
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # 🚀 PROJETO 8: DOUTORA IA OAB
+  # ========================================
+
+  doutora-oab:
+    build:
+      context: /d/doutora-ia-oab-frontend
+      dockerfile: Dockerfile
+    container_name: doutora-oab
+    restart: unless-stopped
+    ports:
+      - "3006:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/doutora_oab
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
