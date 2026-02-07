@@ -10,9 +10,6 @@ version: '3.8'
 networks:
   ai-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.21.0.0/16
 
 volumes:
   postgres_data:
@@ -49,7 +46,6 @@ services:
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       ai-network:
-        ipv4_address: 172.21.0.2
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 10s
@@ -73,7 +69,6 @@ services:
       - redis_data:/data
     networks:
       ai-network:
-        ipv4_address: 172.21.0.3
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis}", "ping"]
       interval: 10s
@@ -98,7 +93,6 @@ services:
       OLLAMA_HOST: 0.0.0.0:11434
     networks:
       ai-network:
-        ipv4_address: 172.21.0.4
     # Descomente para usar GPU (NVIDIA)
     # deploy:
     #   resources:
@@ -127,7 +121,6 @@ services:
       QDRANT_API_KEY: ${QDRANT_API_KEY:-qdrant_key}
     networks:
       ai-network:
-        ipv4_address: 172.21.0.5
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
       interval: 10s
@@ -151,14 +144,13 @@ services:
     ports:
       - "5050:80"
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@projetos-ai.local
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
       SCRIPT_NAME: /pgadmin
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     networks:
       ai-network:
-        ipv4_address: 172.21.0.6
     logging:
       driver: "json-file"
       options:
@@ -176,7 +168,6 @@ services:
       REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-redis}
     networks:
       ai-network:
-        ipv4_address: 172.21.0.7
     depends_on:
       - redis
     logging:
